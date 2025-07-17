@@ -1,0 +1,91 @@
+import numpy as np
+import matplotlib.pyplot as plt
+
+# === PARAMETERS ===
+Fs = 41e6                    # Sampling rate
+Fc = 1090e6                  # Carrier frequency
+LO_freq = 1085e6             # Local Oscillator frequency
+IF = Fc - LO_freq            # Intermediate frequency
+bitrate = 1e6                # 1 Mbps
+bit_pattern = [1, 0, 1, 0, 1, 1, 1, 0, 0, 0, 1, 0]
+num_bits = len(bit_pattern)
+duration = num_bits / bitrate
+
+# === TIME VECTOR ===
+t = np.linspace(0, duration, int(Fs * duration), endpoint=False)
+
+# === OOK MODULATION ===
+samples_per_bit = int(Fs / bitrate)
+symbols = np.repeat(bit_pattern, samples_per_bit)
+ook_signal = symbols[:len(t)]
+carrier = np.cos(2 * np.pi * Fc * t)
+modulated = ook_signal * carrier
+
+# === DOWNCONVERSION ===
+lo = np.cos(2 * np.pi * LO_freq * t)
+downconverted = modulated * lo
+
+# === GOERTZEL FUNCTION ===
+def goertzel(samples, target_freq, sample_rate):
+    N = len(samples)
+    k = int(0.5 + (N * target_freq) / sample_rate)
+    omega = (2 * np.pi * k) / N
+    coeff = 2 * np.cos(omega)
+    s_prev, s_prev2 = 0, 0
+    for sample in samples:
+        s = sample + coeff * s_prev - s_prev2
+        s_prev2, s_prev = s_prev, s
+    power = s_prev2**2 + s_prev**2 - coeff * s_prev * s_prev2
+    return power
+
+# === DEMODULATE USING GOERTZEL ===
+decoded_bits = []
+powers = []
+times = []
+
+for i in range(num_bits):
+    start = i * samples_per_bit
+    end = start + samples_per_bit
+    segment = downconverted[start:end]
+    power = goertzel(segment, IF, Fs)
+    powers.append(power)
+    times.append(i / bitrate)  # ใช้ค่ากลางบิตแบบง่าย ๆ
+    decoded_bits.append(0)  # Placeholder, set after threshold
+
+# === SET FINAL THRESHOLD ===
+max_power = max(powers)
+threshold = 0.5 * max_power
+decoded_bits = [1 if p > threshold else 0 for p in powers]
+
+# === DISPLAY RESULTS ===
+print("Original bits: ", bit_pattern)
+print("Decoded bits:  ", decoded_bits)
+
+# === PLOT ===
+plt.figure(figsize=(14, 9))
+
+plt.subplot(3, 1, 1)
+plt.plot(t * 1e6, modulated)
+plt.title("ASK Modulated Signal @ 1090 MHz")
+plt.xlabel("Time (µs)")
+plt.ylabel("Amplitude")
+plt.xlim(0, duration * 1e6)
+
+plt.subplot(3, 1, 2)
+plt.plot(t * 1e6, downconverted)
+plt.title(f"Downconverted Signal (IF = {IF/1e6:.1f} MHz)")
+plt.xlabel("Time (µs)")
+plt.ylabel("Amplitude")
+plt.xlim(0, duration * 1e6)
+
+plt.subplot(3, 1, 3)
+plt.stem(np.array(times) * 1e6, powers, basefmt=" ")
+plt.axhline(threshold, color='r', linestyle='--', label='Threshold')
+plt.title(f"Detected Power at IF ({IF/1e6:.1f} MHz) using Goertzel")
+plt.xlabel("Time (µs)")
+plt.ylabel("Power")
+plt.xlim(0, duration * 1e6)
+plt.legend()
+
+plt.tight_layout()
+plt.show()
