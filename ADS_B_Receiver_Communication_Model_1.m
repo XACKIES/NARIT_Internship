@@ -1,11 +1,11 @@
-%% ADS-B Receiver PlutoSDR ( Model 1 : Direct Xcorr )
+%% ADS-B Receiver PlutoSDR ( Model 1 : Direct Xcorr, Adaptive Threshold )
 % Description:
 %   Real-time ADS-B (Mode S, DF=17) receiver using PlutoSDR.
 %   Processing chain:
 %     PlutoSDR RX (10 MS/s)
 %     -> magnitude-squared (energy via abs)
 %     -> matched filter (preamble template, direct xcorr)
-%     -> peak pick (simple threshold)
+%     -> peak pick (adaptive threshold: median + k*MAD)
 %     -> slice after preamble
 %     -> PPM demodulation (early-late method via bit0/bit1 templates)
 %     -> CRC-24 parity check
@@ -14,8 +14,8 @@
 %   [1] RTCA DO-260B/DO-260C (1090ES MOPS).
 %   [2] ICAO Annex 10, Vol. IV.
 %   [3] Mode S / ADS-B CRC-24 polynomial: 0x1FFF409.
-%   [4] A. V. Oppenheim and R. W. Schafer, Discrete-Time Signal Processing,
-%       3rd ed., Pearson, 2009.  % (Linear-phase FIR / correlation fundamentals)
+%   [4] Oppenheim & Schafer, Discrete-Time Signal Processing, 3rd ed., Pearson, 2009.
+%   [5] Huber, Robust Statistics, Wiley, 1981. (median/MAD thresholding)
 %
 clear; clc;
 
@@ -24,12 +24,14 @@ DEBUG_PLOT   = false;     % Enable/disable debug plots (kept for consistency)
 DEBUG_EVERY  = 10;        % Plot every N frames
 iterCount    = 0;
 
+% Adaptive threshold parameter (new)
+th_k         = 8.0;       % k for median + k*MAD (tune 6–10; higher = stricter)
+
 %% ---------- Radio / Buffer ----------
 fc        = 1090e6;       % ADS-B carrier frequency
 sampRate  = 10e6;         % Pluto sampling rate
 frameLen  = 65536;        % Samples per frame
-threshold = 0.01;          % Correlation threshold (relative to peak)
-    
+
 % PlutoSDR init (Fast Attack AGC as in the framework)
 rx = sdrrx('Pluto', ...
   'CenterFrequency', fc, ...
@@ -39,7 +41,6 @@ rx = sdrrx('Pluto', ...
   'OutputDataType','double');
 
 disp('✅ PlutoSDR ready... Listening 1090 MHz ...');
-
 
 %% ---------- ADS-B PHY Parameters ----------
 % Oversampling factor (relative to 1 MHz symbol/bit rate)
@@ -76,9 +77,13 @@ while true
   % 2) Direct cross-correlation on magnitude (as originally designed)
   corrOut = abs(conv(abs(rxSig), mf, 'same'));
 
-  % 3) Peak picking with relative threshold
-  peakVal = max(corrOut);
-  locs    = find(corrOut > threshold * peakVal);  % simple threshold detect
+  % 3) Adaptive threshold (median + k*MAD) + peak picking (same style)
+  med = median(corrOut);
+  mad = median(abs(corrOut - med)) + eps;
+  th  = med + th_k * mad;
+
+  % simple threshold detect (unchanged logic)
+  locs = find(corrOut > th);
 
   % 4) Candidate extraction and decoding
   for st = locs(:)'
@@ -112,10 +117,11 @@ while true
         try
           figure(1); clf;
           t = (0:numel(corrOut)-1)/sampRate*1e3; % ms
-          plot(t, corrOut); grid on;
+          plot(t, corrOut); grid on; hold on;
+          yline(th, '--', 'th = median + k·MAD');
+          plot(t(st), corrOut(st), 'rx');
           title('Matched-filter correlation (Direct Xcorr)');
           xlabel('Time (ms)'); ylabel('Correlation');
-          hold on; plot(t(st), corrOut(st), 'rx');
           drawnow limitrate;
         catch
         end
