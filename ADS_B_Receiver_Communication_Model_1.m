@@ -25,8 +25,8 @@ DEBUG_EVERY  = 10;        % Plot every N frames
 iterCount    = 0;
 
 % Adaptive threshold parameter (new)
-th_k         = 8.0;       % k for median + k*MAD (tune 6–10; higher = stricter)
-
+th_k         = 15.0;       % k for median + k*MAD (tune 6–10; higher = stricter)
+% th_k = 8 Based 
 %% ---------- Radio / Buffer ----------
 fc        = 1090e6;       % ADS-B carrier frequency
 sampRate  = 10e6;         % Pluto sampling rate
