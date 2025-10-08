@@ -17,6 +17,7 @@
 % Refs: [1] DO-260B/C, [2] ICAO Annex10 Vol.IV, [3] CRC24 0x1FFF409,
 %       [4] Oppenheim & Schafer, [5] Proakis & Salehi, [6] Huber & Ronchetti
 
+
 clear; clc;
 
 %% ---------- User Controls ----------
