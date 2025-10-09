@@ -13,7 +13,7 @@
 %     -> CRC-24 parity check
 %     -> ROC Curve (sample every k samples from correlation) 
 %     -> CSV logging for packets (incl. SNR & AUC)            
-%
+% 
 % References:
 %   [1] RTCA DO-260B/DO-260C (1090ES MOPS)
 %   [2] ICAO Annex 10, Vol. IV
