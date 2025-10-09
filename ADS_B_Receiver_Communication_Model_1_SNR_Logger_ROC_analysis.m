@@ -13,7 +13,7 @@
 %   -> CRC-24 parity check
 %   -> Packet CSV log (includes AUC_last)
 %   -> ROC (scores sampled, plot-only; print AUC)
-%
+% 
 % Refs: [1] DO-260B/C, [2] ICAO Annex10 Vol.IV, [3] CRC24 0x1FFF409,
 %       [4] Oppenheim & Schafer, [5] Proakis & Salehi, [6] Huber & Ronchetti
 
