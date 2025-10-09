@@ -11,8 +11,8 @@
 %     -> preamble validation (chip-level energy check)
 %     -> PPM demodulation (early-late)
 %     -> CRC-24 parity check
-%     -> ROC Curve (sample every k samples from correlation)  % << พล็อตอย่างเดียว ไม่เซฟ
-%     -> CSV logging for packets (incl. SNR & AUC)            % << ยังเซฟเฉพาะ Packet CSV
+%     -> ROC Curve (sample every k samples from correlation) 
+%     -> CSV logging for packets (incl. SNR & AUC)            
 %
 % References:
 %   [1] RTCA DO-260B/DO-260C (1090ES MOPS)
