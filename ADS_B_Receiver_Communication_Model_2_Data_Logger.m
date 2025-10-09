@@ -17,7 +17,7 @@
 %   [2] ICAO Annex 10, Vol. IV.
 %   [3] CRC polynomial: 0x1FFF409.
 %   [4] Oppenheim & Schafer, DSP (Linear-phase FIR).
-
+ 
 clear; clc;
 
 %% ---------- User Controls ----------
