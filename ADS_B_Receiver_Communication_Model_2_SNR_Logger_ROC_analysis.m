@@ -47,12 +47,12 @@ if LOG_CSV
   end
 end
 
-%% ---------- ROC controls/state ----------
-ROC_SAMPLE_STEP   = 100;       % sample every k samples from correlation output
+%% ---------- ROC controls/state (ALIGNED with reference minimal ROC) ----------
+ROC_SAMPLE_STEP   = 20;        % sample every 20 samples จาก correlation output
 ROC_POS_WINDOW_US = 2.0;       % ±2 us window around true preamble center for labels
 ROC_MIN_POINTS    = 2000;      % start plotting ROC after collecting enough points
-ROC_THRESH_PTS    = 200;       % number of thresholds for ROC sweep
-ROC_MAX_SAMPLES   = inf;       % hard cap of collected samples
+ROC_THRESH_PTS    = 1000;      % number of thresholds for ROC sweep
+ROC_MAX_SAMPLES   = inf ;       % hard cap of collected samples
 roc_scores = [];               % accumulated scores
 roc_labels = [];               % accumulated labels (1/0)
 AUC_last   = NaN;              % keep last computed AUC for printing/CSV
@@ -248,7 +248,7 @@ while true
   roc_scores = [roc_scores; abs(xFilt(s_idx)).'];       %#ok<AGROW>
   roc_labels = [roc_labels; double(pos_mask(s_idx)).']; %#ok<AGROW>
 
-  % Hard cap → finalize plotting and exit
+  % Hard cap → finalize plotting and exit  (USE minimal computeROC)
   if numel(roc_scores) >= ROC_MAX_SAMPLES
     Ncap = ROC_MAX_SAMPLES;
     if numel(roc_scores) > Ncap
@@ -271,9 +271,9 @@ while true
     return;
   end
 
-  % Intermediate ROC plot (no CSV save)
+  % Intermediate ROC plot (USE minimal computeROC)
   if DEBUG_PLOT && mod(iterCount, DEBUG_EVERY)==0 && numel(roc_scores) >= ROC_MIN_POINTS
-    [FPR, TPR, AUC, ~] = computeROC_verbose(roc_scores, roc_labels, ROC_THRESH_PTS);
+    [FPR, TPR, AUC] = computeROC(roc_scores, roc_labels, ROC_THRESH_PTS);
     AUC_last = AUC;
     if isempty(hFigROC) || ~ishandle(hFigROC), hFigROC = figure(9); end
     set(0,'CurrentFigure',hFigROC); clf;
@@ -348,14 +348,14 @@ function isValid = checkCRC(bits)
   isValid = isequal(dividend(end-23:end), crcRx);
 end
 
-%% -------- ROC compute (vectorized; returns thresholds for inspection) --------
-function [FPR, TPR, AUC, thr] = computeROC_verbose(scores, labels, Nth)
+%% -------- ROC compute (toolbox-free, minimal; aligned with reference) --------
+function [FPR, TPR, AUC] = computeROC(scores, labels, Nth)
   scores = scores(:);
   labels = labels(:) > 0;
   npos = sum(labels==1); nneg = sum(labels==0);
-  if npos==0 || nneg==0, FPR=[0;1]; TPR=[0;1]; AUC=NaN; thr=[0;1]; return; end
+  if npos==0 || nneg==0, FPR=[0;1]; TPR=[0;1]; AUC=NaN; return; end
   smin=min(scores); smax=max(scores);
-  if smin==smax, FPR=[0;1]; TPR=[0;1]; AUC=0.5; thr=[smax;smin]; return; end
+  if smin==smax, FPR=[0;1]; TPR=[0;1]; AUC=0.5; return; end
 
   thr = linspace(smax, smin, max(3, Nth)).';
   TPR = zeros(numel(thr),1); FPR = zeros(numel(thr),1);
@@ -371,13 +371,7 @@ function [FPR, TPR, AUC, thr] = computeROC_verbose(scores, labels, Nth)
   end
   [FPR, ord] = sort(FPR);
   TPR = TPR(ord);
-  thr = thr(ord);
   AUC = trapz(FPR, TPR);
-end
-
-%% -------- ROC compute (toolbox-free, minimal) --------
-function [FPR, TPR, AUC] = computeROC(scores, labels, Nth)
-  [FPR,TPR,AUC,~] = computeROC_verbose(scores, labels, Nth);
 end
 
 %% -------- Tiny helper --------
