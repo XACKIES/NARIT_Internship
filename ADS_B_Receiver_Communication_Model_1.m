@@ -1,4 +1,5 @@
-%% ADS-B Receiver PlutoSDR 
+%% ADS-B Receiver PlutoSDR ( Adaptive Threshold Algorithm )
+%
 % Description:
 %   Real-time ADS-B (Mode S, DF=17) receiver using PlutoSDR.
 %   Processing chain:
@@ -26,14 +27,8 @@
 % Notes:
 %   - Requires: Communications Toolbox Support Package for ADALM-PLUTO Radio.
 %   - AGC Fast Attack recommended at 10 MS/s for bursty ADS-B.
-%   - All time alignment is performed on the FIR-filtered stream to keep st+L/2 valid.
 
 clear; clc;
-
-%% ---------- User Controls ----------
-DEBUG_PLOT   = false;      % Enable/disable debug plots
-DEBUG_EVERY  = 10;         % Plot every N frames (when DEBUG_PLOT = true)
-iterCount    = 0;
 
 % Adaptive threshold Gain Factor  (k in median + k*MAD)
 th_k         = 5.0;        
@@ -61,7 +56,7 @@ b_fir = [0  -0.001951 -0.001727 0.002622 0.006403 0 -0.013408 -0.011526 0.015748
          0 0.006403 0.002622 -0.001727 -0.001951 0];
 
 M_fir  = numel(b_fir);
-D_fir  = (M_fir-1)/2;                  % group delay in samples (31 taps ⇒ 15 samples ≈ 1.5 µs @10 MS/s)
+D_fir  = (M_fir-1)/2;   % group delay in samples (31 taps ⇒ 15 samples ≈ 1.5 µs @10 MS/s)
 
 % Streaming filter state (z_i) for FIR
 zi_fir = zeros(M_fir-1,1);
@@ -83,7 +78,7 @@ half      = floor(os/2);
 bit0      = [ones(1,half) zeros(1,os-half)];
 bit1      = [zeros(1,half) ones(1,os-half)];
 
-% Pack parameters (for docs/telemetry)
+% Pack parameters 
 ADS_B_Parameter = struct();
 ADS_B_Parameter.SamplesPerChip     = SamplesPerChip;           % ≈ os/2
 ADS_B_Parameter.SamplesPerBit      = os;                       % os samples per 1 µs bit
@@ -154,28 +149,11 @@ while true
       fprintf('DATA = %s\n', char(DATA + '0'));
       fprintf('#Aircraft Detecting Counting = %d\n', (conting));
       disp('======================================');
-      % Optional debug plot
-      if DEBUG_PLOT && mod(iterCount, DEBUG_EVERY) == 0
-        try
-          figure(1); clf;
-          t = (0:numel(c)-1)/sampRate*1e3; % ms
-          plot(t, c, '-'); grid on; hold on;
-          yline(th, '--', 'th = median + k·MAD');
-          % mark st (middle-of-preamble) and st_start (end-of-preamble)
-          plot(t(st),       c(st),       'gx', 'MarkerSize', 8, 'LineWidth', 1.5);
-          plot(t(st_start), c(st_start), 'mx', 'MarkerSize', 8, 'LineWidth', 1.5);
-          legend('corrOut','threshold','st (mid-preamble)','st+L/2 (payload start)','Location','best');
-          title('Matched-filter correlation (Direct Xcorr) + FIR + Adaptive Threshold + Alignment');
-          xlabel('Time (ms)'); ylabel('Correlation magnitude');
-          drawnow limitrate;
-        catch
-        end
-      end
     end
   end
 end
 
-%% ---------- Helper: Mode-S/ADS-B CRC-24 parity ----------
+%% ---------- Mode-S/ADS-B CRC-24 parity ----------
 function isValid = checkCRC(bits)
   % Mode S / ADS-B (DO-260) CRC-24 over 88-bit payload with 24 parity bits.
   % Generator polynomial (binary): 1111111111111010000001001  = 0x1FFF409.
