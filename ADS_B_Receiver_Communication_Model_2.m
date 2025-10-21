@@ -1,4 +1,4 @@
-%% ADS-B Receiver PlutoSDR ( Model 2 : Frame Buffer )
+%% ADS-B Receiver PlutoSDR ( Frame Buffer Algorithm )
 % Description:
 %   Real-time ADS-B (Mode S, DF=17) receiver using PlutoSDR.
 %   Processing chain:
@@ -11,7 +11,7 @@
 %     -> preamble validation (chip-level energy check)
 %     -> PPM demodulation (early-late method)
 %     -> CRC-24 parity check
-%
+
 % References:
 %   [1] RTCA DO-260B/DO-260C (1090ES MOPS).
 %   [2] ICAO Annex 10, Vol. IV.
@@ -20,16 +20,12 @@
 
 clear; clc;
 
-%% ---------- User Controls ----------
-DEBUG_PLOT   = false;      % Enable/disable debug plots
-DEBUG_EVERY  = 10;         % Plot every N frames
-iterCount    = 0;
-
 %% ---------- Radio / Buffer ----------
 fc       = 1090e6;         % ADS-B carrier frequency
 sampRate = 10e6;           % 10 MS/s -> 5 samples per 0.5 us chip at 2 MHz chip rate
 frameLen = 65536;          % SDR read size (samples per hardware read)
-bufferLen= 16*frameLen;    % Sliding buffer length (for correlation/search windowing)
+Scaling_Factor = 16         %Frame Scaling factor
+bufferLen = Scaling_Factor*frameLen;    % Sliding buffer length (for correlation/search windowing)
 
 % PlutoSDR front-end with Fast Attack AGC
 rx = sdrrx('Pluto', ...
@@ -102,36 +98,6 @@ while true
   % 6) Framework-like packet search on the correlation output
   [packetSamples, packetCnt, syncTimeVec] = packetSearch(abs(xFilt), xBuff, energySig, ADS_B_Parameter);
 
-  % 7) Optional debug plots (every DEBUG_EVERY frames)
-  if DEBUG_PLOT && mod(iterCount, DEBUG_EVERY)==0
-    try
-      figure(1); clf;
-      t = (1:numel(energySig))/sampRate*1e3; % Time axis in ms
-
-      subplot(2,1,1);
-      plot(t, energySig); grid on;
-      title('Energy |u|^2 (buffer)'); xlabel('Time (ms)'); ylabel('Energy');
-      hold on;
-      if ~isempty(syncTimeVec)
-        plot(t(syncTimeVec(syncTimeVec>0 & syncTimeVec<=numel(t))), ...
-             energySig(syncTimeVec(syncTimeVec>0 & syncTimeVec<=numel(t))), 'ro');
-        legend('Energy','Sync candidates');
-      end
-
-      subplot(2,1,2);
-      plot(t, xFilt); grid on;
-      title('Matched-filter correlation'); xlabel('Time (ms)'); ylabel('Correlation');
-      hold on;
-      if ~isempty(syncTimeVec)
-        plot(t(syncTimeVec(syncTimeVec>0 & syncTimeVec<=numel(t))), ...
-             xFilt(syncTimeVec(syncTimeVec>0 & syncTimeVec<=numel(t))), 'rx');
-        legend('Correlation','Sync candidates');
-      end
-      drawnow limitrate;
-    catch
-      end
-  end
-
   % 8) Packet decode
   for k = 1:packetCnt
     region = abs(packetSamples(:,k));
@@ -163,18 +129,12 @@ while true
       fprintf('#Aircraft Detecting Counting = %d\n', (conting));
       disp('======================================');
 
-      
-      
-      
-      
-      
-      
       end
     end
   end
 end
 
-%% -------- helper: Framework-like packet search --------
+%% --------Packet search --------
 function [packetSamples, packetCnt, syncTimeVec] = packetSearch(xFilt, xBuff, energySig, ADS_B_Parameter)
   % Inputs:
   %   xFilt     - correlation output (abs / correlation magnitude)
