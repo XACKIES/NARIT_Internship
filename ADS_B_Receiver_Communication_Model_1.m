@@ -1,9 +1,9 @@
-%% ADS-B Receiver PlutoSDR (Model 1: Direct Xcorr + FIR + Adaptive Threshold + Proper Alignment)
+%% ADS-B Receiver PlutoSDR 
 % Description:
 %   Real-time ADS-B (Mode S, DF=17) receiver using PlutoSDR.
 %   Processing chain:
 %     PlutoSDR RX (10 MS/s)
-%     -> complex FIR front-end (linear-phase, streaming state via z_i/z_f)
+%     -> complex FIR front-end (linear-phase)
 %     -> magnitude (abs)
 %     -> matched filter (preamble template, direct xcorr via conv)
 %     -> adaptive threshold (median + k*MAD)
@@ -35,8 +35,8 @@ DEBUG_PLOT   = false;      % Enable/disable debug plots
 DEBUG_EVERY  = 10;         % Plot every N frames (when DEBUG_PLOT = true)
 iterCount    = 0;
 
-% Adaptive threshold parameter (k in median + k*MAD)
-th_k         = 5.0;        % Typical 6–10. Higher = stricter.
+% Adaptive threshold Gain Factor  (k in median + k*MAD)
+th_k         = 5.0;        
 
 %% ---------- Radio / Buffer ----------
 fc        = 1090e6;        % ADS-B carrier frequency
