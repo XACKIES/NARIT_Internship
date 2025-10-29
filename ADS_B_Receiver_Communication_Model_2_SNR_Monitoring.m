@@ -1,0 +1,248 @@
+%% ADS-B Receiver PlutoSDR (Frame Buffer Algorithm + SNR print for valid DF=17)
+% Engineering steps:
+%   1) SDR front-end (10 MS/s, AGC Fast Attack) @1090 MHz
+%   2) FIR pre-filter (linear-phase) on complex IQ
+%   3) Sliding frame buffer for streaming
+%   4) |u|^2 energy -> matched filter with 16-chip preamble template
+%   5) Subframe-wise peak search + chip-level preamble validation
+%   6) Slice payload region -> PPM early-late demod (112 bits)
+%   7) CRC-24 (DO-260 Mode S) parity check
+%   8) If DF=17 & CRC OK: compute SNR using mask-only IQ
+%        - Signal: complex IQ within [dataStart:dataEnd]
+%        - Peak power inside message => P_sig_lin = max(|x|^2)
+%        - Noise: complex IQ outside [syncTime - preamble_len, dataEnd]
+%        - P_noi_lin = mean(|x|^2) on the noise mask
+%        - Report SNR_iq_dB = 10*log10(P_sig_lin/P_noi_lin)
+%
+% References (cite in report):
+%   [1] RTCA DO-260B/DO-260C, 1090ES MOPS (preamble, framing, CRC).
+%   [2] ICAO Annex 10, Vol. IV (Mode S physical layer/spec).
+%   [3] CRC polynomial 0x1FFF409 for Mode S/ADS-B.
+%   [4] A.V. Oppenheim & R.W. Schafer, "Discrete-Time Signal Processing"
+%       (matched filter, linear-phase FIR concepts).
+
+clear; clc;
+
+%% ---------- Radio / Buffer ----------
+fc       = 1090e6;         % ADS-B carrier frequency
+sampRate = 10e6;           % 10 MS/s -> 5 samples per 0.5 us chip at 2 MHz chip rate
+frameLen = 65536;          % SDR read size (samples per hardware read)
+Scaling_Factor = 20;       % Frame scaling factor
+bufferLen = Scaling_Factor*frameLen;    % Sliding buffer length
+iterCount = 0;
+
+% PlutoSDR front-end with Fast Attack AGC
+rx = sdrrx('Pluto', ...
+  'CenterFrequency', fc, ...
+  'BasebandSampleRate', sampRate, ...
+  'SamplesPerFrame', frameLen, ...
+  'GainSource','AGC Fast Attack', ...   % AGC enabled for robust input level
+  'OutputDataType','double');
+
+disp('✅ PlutoSDR ready (AGC Fast Attack) ... Listening 1090 MHz ...');
+
+%% ---------- FIR front-end (pre-buffer) ----------
+% Real-coefficient linear-phase FIR, applied to complex IQ
+b_fir = [0  -0.001951 -0.001727 0.002622 0.006403 0 -0.013408 -0.011526 0.015748 ...
+         0.034483 0 -0.064286 -0.056995 0.089999 0.300257 0.400761 0.300257 ...
+         0.089999 -0.056995 -0.064286 0 0.034483 0.015748 -0.011526 -0.013408 ...
+         0 0.006403 0.002622 -0.001727 -0.001951 0];
+% Streaming filter state (kept across frames)
+firState = zeros(length(b_fir)-1, 1);
+
+%% ---------- ADS-B PHY Parameter ----------
+spc_chip  = round(sampRate/2e6);  % Samples per chip (chip = 0.5 us)
+spb_bit   = 2*spc_chip;           % Samples per bit (bit = 1.0 us)
+
+% 16-chip preamble (8 us) in chip-domain (1 = pulse present, 0 = gap)
+SyncSequence = [1 0 1 0 0 0 0 1 0 1 0 0 0 0 0 0];
+
+ADS_B_Parameter.SamplesPerChip             = spc_chip;
+ADS_B_Parameter.SyncSequence               = SyncSequence;
+ADS_B_Parameter.SyncSequenceLength         = length(SyncSequence);
+ADS_B_Parameter.SyncSequenceHighIndices    = find(SyncSequence==1);
+ADS_B_Parameter.SyncSequenceLowIndices     = find(SyncSequence==0);
+ADS_B_Parameter.SyncSequenceNumHighValues  = numel(ADS_B_Parameter.SyncSequenceHighIndices);
+ADS_B_Parameter.SyncSequenceNumLowValues   = numel(ADS_B_Parameter.SyncSequenceLowIndices);
+ADS_B_Parameter.PreambleLength             = ADS_B_Parameter.SyncSequenceLength * spc_chip;   % 16 * spc
+ADS_B_Parameter.LongPacketLength           = 112 * spb_bit;                                   % 112 bits
+ADS_B_Parameter.MaxPacketLength            = ADS_B_Parameter.PreambleLength + ADS_B_Parameter.LongPacketLength;
+ADS_B_Parameter.MaxNumPacketsInFrame       = 64;
+ADS_B_Parameter.SyncDownsampleFactor       = 1;
+
+% Matched-filter template : ±1 version of the preamble replicated at chip rate
+preamble_bip = 2*SyncSequence - 1;                % Map {0,1} -> {-1,+1}
+mf = flipud(repelem(preamble_bip(:), spc_chip));  % Time-reversed template (length = 16*spc)
+
+% Sliding buffer for streaming correlation
+xBuff = zeros(bufferLen,1);
+
+conting = 0;  % aircraft/message count (DF=17, CRC OK)
+
+%% ---------- Main loop ----------
+while true
+  iterCount = iterCount + 1;
+
+  % 1) Read RF samples
+  newFrame = rx();
+  if isempty(newFrame), continue; end
+
+  % 2) FIR pre-filter (streaming with state); apply to complex IQ
+  [newFrameFIR, firState] = filter(b_fir, 1, newFrame, firState);
+
+  % 3) Update sliding buffer with FIR'ed samples
+  xBuff = [xBuff(numel(newFrameFIR)+1:end); newFrameFIR];
+
+  % 4) Convert to instantaneous energy |u|^2
+  energySig = abs(xBuff).^2;
+
+  % 5) Matched-filter correlation against the preamble (on the energy signal)
+  xFilt = conv(energySig, mf, 'same');
+
+  % 6) Framework-like packet search on the correlation output
+  [packetSamples, packetCnt, syncTimeVec] = packetSearch(abs(xFilt), xBuff, energySig, ADS_B_Parameter);
+
+  % 7) Packet decode
+  for k = 1:packetCnt
+    region = abs(packetSamples(:,k));
+
+    % Safety: reshape region into [samples-per-bit x num-bits]
+    nBits = floor(numel(region)/spb_bit);
+    if nBits < 112, continue; end
+    segs  = reshape(region(1:nBits*spb_bit), spb_bit, nBits);
+
+    % PPM demodulation: compare early (0–0.5 us) vs late (0.5–1.0 us) energy
+    early = sum(segs(1:spc_chip, :), 1);
+    late  = sum(segs(spc_chip+1:end, :), 1);
+    bits  = double(early > late);
+    bits  = bits(1:112);   % Keep the standard 112-bit payload (DF17)
+
+    % CRC-24 parity check across first 112 bits (DO-260 Mode S parity)
+    if checkCRC(bits)
+      DF = bin2dec(num2str(bits(1:5)));
+      if DF==17
+        % ---------- SNR (mask-only IQ around this packet) ----------
+        preamble_len   = ADS_B_Parameter.PreambleLength;
+        msg_len        = ADS_B_Parameter.LongPacketLength;
+        syncTime       = syncTimeVec(k);                  % start-of-preamble index in xBuff
+        dataStart      = syncTime + preamble_len;
+        dataEnd        = dataStart + msg_len - 1;
+
+        % Boundary guard
+        dataStart = max(1, dataStart);
+        dataEnd   = min(length(xBuff), dataEnd);
+
+        % Signal region: complex IQ inside message
+        region_iq  = xBuff(dataStart:dataEnd);
+        % Peak power inside message (robust to residual AGC ripple)
+        P_sig_lin  = max(abs(region_iq).^2);
+
+        % Noise region: all IQ outside [syncTime - preamble_len, dataEnd]
+        mask = true(size(xBuff));
+        sigL = max(1, syncTime - preamble_len);
+        sigR = min(length(xBuff), dataEnd);
+        mask(sigL:sigR) = false;
+        noise_iq = xBuff(mask);
+        if isempty(noise_iq), noise_iq = xBuff; end
+
+        P_noi_lin = median(abs(noise_iq).^2);
+
+        SNR_iq_dB = 10*log10(P_sig_lin/(P_noi_lin + eps));
+        Psig_dBFS = 10*log10(P_sig_lin + eps);
+        Pnoi_dBFS = 10*log10(P_noi_lin + eps);
+        % ------------------------------------------------------------
+
+        % Pretty print decoded fields + SNR results
+        conting = conting+1;
+        CA   = bin2dec(num2str(bits(6:8)));
+        ICAO = bits(9:32);
+        DATA = bits(33:88);
+
+        disp('========= VALID ADS-B (DF=17) =========');
+        fprintf('CA        = %d\n', CA);
+        fprintf('ICAO      = %06X\n', bin2dec(char(ICAO + '0')));
+        fprintf('DATA(56)  = %s\n', char(DATA + '0'));
+        fprintf('SNR (dB)  = %.2f dB\n', SNR_iq_dB);
+        fprintf('Count = %d\n', (conting));
+        disp('======================================');
+      end
+    end
+  end
+end
+
+%% --------Packet search --------
+function [packetSamples, packetCnt, syncTimeVec] = packetSearch(xFilt, xBuff, energySig, ADS_B_Parameter)
+  % Inputs:
+  %   xFilt     - correlation output (abs / correlation magnitude)
+  %   xBuff     - current sliding buffer of raw IQ samples
+  %   energySig - |u|^2 energy sequence
+  %   ADS_B_Parameter - struct with PHY parameters 
+
+  % Outputs:
+  %   packetSamples - [LongPacketLength x MaxNumPacketsInFrame] extracted regions (data only)
+  %   packetCnt     - number of packets found in this frame
+  %   syncTimeVec   - sync start indices (buffer positions) for found packets
+
+  spc = ADS_B_Parameter.SamplesPerChip;
+  syncLen    = ADS_B_Parameter.SyncSequenceLength;
+  syncSigLen = syncLen*spc;
+  xLen       = length(xBuff);
+
+  % Subframe length ~ maximum packet length (preamble + 112 bits)
+  subFrameLen     = ADS_B_Parameter.MaxPacketLength;
+  subFrameDownLen = subFrameLen / ADS_B_Parameter.SyncDownsampleFactor;
+  numSubFrames    = floor(xLen / subFrameLen);
+
+  packetSamples = zeros(ADS_B_Parameter.LongPacketLength, ADS_B_Parameter.MaxNumPacketsInFrame, 'like', xBuff);
+  syncTimeVec   = zeros(ADS_B_Parameter.MaxNumPacketsInFrame,1);
+  packetCnt     = 0;
+
+  for p = 0:(numSubFrames-2)
+    % (A) Find correlation peak within this subframe
+    idx = double(p)*subFrameDownLen + (1:subFrameDownLen);
+    [~, tmp] = max(xFilt(idx));
+    syncIdx  = tmp;  % Index relative to the subframe
+
+    % (B) Convert correlation index to buffer index by compensating preamble length
+    syncTime = round(syncIdx*ADS_B_Parameter.SyncDownsampleFactor - syncSigLen + p*subFrameLen);
+
+    % (C) Boundary guard
+    if (syncTime <= 0) || (syncTime + ADS_B_Parameter.MaxPacketLength - 1 > xLen)
+      continue;
+    end
+
+    % (D) Preamble validation using chip-level energy over 16 chips
+    rxSyncEnergy = energySig(syncTime + (0:syncSigLen-1));
+    rxSyncSeq    = sum(reshape(rxSyncEnergy, spc, syncLen), 1);  % Energy per chip
+
+    hi = ADS_B_Parameter.SyncSequenceHighIndices;
+    lo = ADS_B_Parameter.SyncSequenceLowIndices;
+    th = (mean(rxSyncSeq(hi)) + mean(rxSyncSeq(lo)))/2;          % Adaptive threshold
+
+    % Expect chips with '1' to be > th and chips with '0' to be < th
+    if all(xor((rxSyncSeq < th), ADS_B_Parameter.SyncSequence))
+      % (E) Passed preamble check -> slice the 112-bit data region that follows
+      packetCnt = packetCnt + 1;
+      if packetCnt <= ADS_B_Parameter.MaxNumPacketsInFrame
+        dataIdx = int32(ADS_B_Parameter.PreambleLength + (0:ADS_B_Parameter.LongPacketLength-1));
+        packetSamples(:,packetCnt) = xBuff(syncTime + dataIdx, 1);
+        syncTimeVec(packetCnt)     = syncTime;
+      end
+    end
+  end
+end
+
+%% -------- Mode-S/ADS-B CRC-24 parity --------
+function isValid = checkCRC(bits)
+  % Mode S/ADS-B (DO-260) CRC-24 over 112-bit message (88-bit payload + 24-bit parity).
+  % Generator polynomial (binary): 1111111111111010000001001  = 0x1FFF409.
+  if numel(bits) < 112, isValid = false; return; end
+  poly = [1 1 1 1 1 1 1 1 1 1 1 1 1 0 1 0 0 0 0 0 0 1 0 0 1];
+  msg   = bits(1:88);
+  crcRx = bits(89:112);
+  dividend = [msg zeros(1,24)];
+  for i = 1:numel(msg)
+    if dividend(i)==1, dividend(i:i+24) = bitxor(dividend(i:i+24), poly); end
+  end
+  isValid = isequal(dividend(end-23:end), crcRx);
+end
